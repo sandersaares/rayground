@@ -2,13 +2,16 @@ use rand::Rng;
 use std::{
     error::Error,
     io,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Arc, Mutex,
+    },
     thread,
     time::Duration,
     vec,
 };
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum ItemType {
     Apple,
     Orange,
@@ -40,11 +43,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let ready_tx_apples = ready_tx.clone();
     let ready_tx_oranges = ready_tx;
 
+    let work_created = Arc::new(Mutex::new(0));
+    let work_created_read = work_created.clone();
+
     let apples_thread = thread::spawn(move || collect_apples(apples_rx, ready_tx_apples));
     let oranges_thread = thread::spawn(move || collect_oranges(oranges_rx, ready_tx_oranges));
-    let results_thread = thread::spawn(move || report_results(ready_rx));
+    let results_thread = thread::spawn(move || report_results(ready_rx, work_created_read));
 
-    generate_work(apples_tx, oranges_tx)?;
+    generate_work(apples_tx, oranges_tx, work_created)?;
 
     let apples_result = apples_thread.join();
     let oranges_result = oranges_thread.join();
@@ -68,6 +74,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn generate_work(
     apples_tx: Sender<FillContainerMessage<Apple>>,
     oranges_tx: Sender<FillContainerMessage<Orange>>,
+    work_created: Arc<Mutex<usize>>,
 ) -> Result<(), Box<dyn Error>> {
     println!("Press enter to give the app more work to do.");
 
@@ -78,6 +85,11 @@ fn generate_work(
         io::stdin().read_line(&mut input)?;
 
         // We do not care what the input is. We just generate more work every time enter is pressed.
+        {
+            let mut work_created_guard = work_created.lock().unwrap();
+            *work_created_guard += 1;
+        }
+
         let item_type = if rng.gen_bool(0.5) {
             ItemType::Apple
         } else {
@@ -165,10 +177,17 @@ fn collect_oranges(
     }
 }
 
-fn report_results(rx: Receiver<ContainerFilledMessage>) {
+fn report_results(rx: Receiver<ContainerFilledMessage>, work_created: Arc<Mutex<usize>>) {
+    let mut work_completed: usize = 0;
+
     for message in rx {
+        let work_created_value = *work_created.lock().unwrap();
+        work_completed += 1;
+
+        let percent_completed = work_completed as f32 / work_created_value as f32 * 100.0;
+
         println!(
-            "Collected {}x {:?} into a container of size {}",
+            "Collected {}x {:?} into a container of size {}. {work_completed} of {work_created_value} work items completed ({percent_completed:.1} %).",
             message.items_added, message.item_type, message.container_size
         );
     }
